@@ -285,6 +285,8 @@ llama_model_granite_switch::graph::graph(
     slot_f = ggml_reshape_1d(ctx0, slot_f, n_tokens);
     slot_f = ggml_clamp(ctx0, slot_f, 0.0f, (float) smodel.n_adapters);
     slot_f = ggml_round(ctx0, slot_f);
+    // slot 0 is the zero delta: send it as id -1 so MUL_MAT_ID skips the row
+    slot_f = ggml_scale_bias(ctx0, ggml_add(ctx0, slot_f, ggml_step(ctx0, slot_f)), 1.0f, -1.0f);
     ggml_tensor * adapter_ids = ggml_cast(ctx0, slot_f, GGML_TYPE_I32);
     cb(adapter_ids, "adapter_ids", -1);
 
