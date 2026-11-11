@@ -5,7 +5,6 @@
 #include "llama-model-loader.h"
 
 // note: almost all graphs require at least sqrtf, so include cmath globally
-#include <atomic>
 #include <cmath>
 #include <map>
 
@@ -1942,13 +1941,6 @@ struct llama_model_granite_switch : public llama_model_base {
 
     std::unordered_map<llama_token, int32_t>     adapter_token_to_slot;
     std::unordered_map<llama_token, llama_token> adapter_token_to_substitute;
-
-    // adapter state is session-persistent: once an activation or substitute
-    // token enters any sequence, the adapter shapes later batches, so the
-    // delta chain must keep being built. Lives on the model, NOT the graph
-    // input, because graph rebuilds recreate input objects (and would reset
-    // a latch stored there). Conservative: never cleared automatically.
-    mutable std::atomic<bool> adapter_seen{false};
 
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);

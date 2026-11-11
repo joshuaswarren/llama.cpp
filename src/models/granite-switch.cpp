@@ -138,8 +138,6 @@ public:
 
     void set_input(const llama_ubatch * ubatch) override;
 
-    bool used_adapter_path = false;
-
     bool any_adapter_tokens(const llama_ubatch & ubatch) const {
         if (!ubatch.token) {
             return false;
@@ -153,13 +151,7 @@ public:
     }
 
     bool can_reuse(const llm_graph_params & params) override {
-        if (any_adapter_tokens(params.ubatch)) {
-            smodel.adapter_seen.store(true, std::memory_order_relaxed);
-        }
-        // adapter_seen lives on the model and survives graph rebuilds; while
-        // it is set, every build keeps the full delta chain (and a rebuild is
-        // forced so a light graph inherited from earlier batches is discarded)
-        return !smodel.adapter_seen.load(std::memory_order_relaxed);
+        return sub_tokens && params.ubatch.n_tokens == sub_tokens->ne[0];
     }
 
     ggml_tensor * sub_tokens  = nullptr; // I32 [n_tokens] adapter-substituted token ids
@@ -264,16 +256,13 @@ llama_model_granite_switch::graph::graph(
     GGML_ASSERT(n_embd_head == n_rot);
 
     auto inp_switch = std::make_unique<llm_graph_input_switch>(smodel);
-    if (inp_switch->any_adapter_tokens(ubatch)) {
-        smodel.adapter_seen.store(true, std::memory_order_relaxed);
-    }
-    // the model-level latch, not the current batch alone, picks the topology:
-    // decode batches carry only plain tokens, but the adapter shapes them for
-    // the rest of the session once an activation token has entered the context
-    inp_switch->used_adapter_path = smodel.adapter_seen.load(std::memory_order_relaxed); fprintf(stderr, "gswitch-latch: seen=%d batch_has_adapter=%d\n", (int)inp_switch->used_adapter_path, (int)inp_switch->any_adapter_tokens(ubatch));
     inp_switch->sub_tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_input(inp_switch->sub_tokens);
-    if (inp_switch->used_adapter_path) {
+    // the router block is built on every batch of an adapter-capable model:
+    // any session latch would leak across sequences and contexts (and would
+    // never clear on seq_rm or a KV clear), and the in-graph router already
+    // returns the null slot for plain tokens, so no state is needed here
+    if (smodel.n_adapters > 0) {
         inp_switch->router_ksig = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
         inp_switch->router_vval = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
         inp_switch->router_q    = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
@@ -302,7 +291,7 @@ llama_model_granite_switch::graph::graph(
 
     // single causal head at layer R recovers the adapter index in-graph: only dim 0
     // carries signal (Q[0]=1, K[0]=+/-gain, V[0]=slot/0), the rest is zero-padded.
-    // skipped entirely when the batch has no adapter tokens: every delta is zero
+    // runs on every batch: plain tokens route to the null slot, so every delta is zero
     ggml_tensor * adapter_ids = nullptr;
     if (router_ksig) {
         const int R = hparams.router_layer;
