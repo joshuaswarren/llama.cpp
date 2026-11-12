@@ -571,6 +571,15 @@ static bool ggml_vk_roll_bk_loop(const uint32_t * code, size_t word_count, std::
     return true;
 }
 
+#if VK_HEADER_VERSION >= 287
+// Mesa's Apple Silicon Vulkan drivers report either VK_DRIVER_ID_MESA_HONEYKRISP or
+// VK_DRIVER_ID_AURORA_BOREALIS (35). Both are the same AGX GPU family and need the same tuning.
+// The raw value is compared because older Vulkan headers do not define eAuroraBorealis.
+static bool ggml_vk_driver_is_agx(vk::DriverId driver_id) {
+    return driver_id == vk::DriverId::eMesaHoneykrisp || static_cast<int>(driver_id) == 35;
+}
+#endif
+
 static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipeline, size_t spv_size, const void* spv_data, const std::string entrypoint,
                                          uint32_t parameter_count, std::array<uint32_t, 3> wg_denoms, std::vector<uint32_t> specialization_constants,
                                          bool disable_robustness, bool require_full_subgroups, uint32_t required_subgroup_size) {
@@ -672,7 +681,7 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
 
 #if VK_HEADER_VERSION >= 287
     // Roll the mul_mm BK loop on Asahi Linux. Skip bf16 and the mul_mmq pipelines.
-    if (device->driver_id == vk::DriverId::eMesaHoneykrisp &&
+    if (ggml_vk_driver_is_agx(device->driver_id) &&
         pipeline->name.rfind("matmul", 0) == 0 &&
         pipeline->name.find("bf16") == std::string::npos &&
         pipeline->name.find("q8_1") == std::string::npos) {
@@ -5120,9 +5129,9 @@ vk_device ggml_vk_get_device(size_t idx) {
             }
 
 #if VK_HEADER_VERSION >= 287
-            // Honeykrisp driver for Asahi Linux doesn't report VK_VENDOR_ID_APPLE.
-            // Check for Honeykrisp driver and force same configuration as the VK_VENDOR_ID_APPLE case.
-            if (device->driver_id == vk::DriverId::eMesaHoneykrisp) {
+            // Mesa's Apple Silicon drivers (Honeykrisp and Aurora Borealis) don't report VK_VENDOR_ID_APPLE.
+            // Check for the driver id and force same configuration as the VK_VENDOR_ID_APPLE case.
+            if (ggml_vk_driver_is_agx(device->driver_id)) {
                 device->mul_mat_l[i] = false;
                 device->mul_mat_m[i] = true;
                 device->mul_mat_s[i] = false;
